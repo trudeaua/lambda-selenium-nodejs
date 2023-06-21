@@ -1,0 +1,54 @@
+service: ar-reports-scraper
+useDotenv: true
+
+plugins:
+  - serverless-offline
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: ca-central-1
+  timeout: 300
+  stage: ${opt:stage, 'production'}
+  ecr:
+    # In this section you can define images that will be built locally and uploaded to ECR
+    images:
+      ar_reports_scraper_image:
+        path: ./
+  environment:
+    AUTH_USERNAME: ${env:AUTH_USERNAME}
+    AUTH_PASSWORD: ${env:AUTH_PASSWORD}
+    GOOGLE_DRIVE_CLIENT_ID: ${env:GOOGLE_DRIVE_CLIENT_ID}
+    GOOGLE_DRIVE_CLIENT_SECRET: ${env:GOOGLE_DRIVE_CLIENT_SECRET}
+    GOOGLE_DRIVE_REDIRECT_URI: ${env:GOOGLE_DRIVE_REDIRECT_URI}
+    GOOGLE_DRIVE_REFRESH_TOKEN: ${env:GOOGLE_DRIVE_REFRESH_TOKEN}
+    NODE_ENV: ${opt:stage, 'production'}
+    AWS_ACCOUNT_ID: ${env:AWS_ACCOUNT_ID}
+    LOGIN_URL: ${env:LOGIN_URL}
+    REPORT_FILENAME: ${env:REPORT_FILENAME}
+    TO_EMAIL: ${env:TO_EMAIL}
+    SUCCESS_CC_EMAILS: ${env:SUCCESS_CC_EMAILS}
+    FAIL_CC_EMAILS: ${env:FAIL_CC_EMAILS}
+    REPORT_FRIENDLY_NAME: ${env:REPORT_FRIENDLY_NAME}
+    DRIVE_FOLDER_ID: ${env:DRIVE_FOLDER_ID}
+
+package:
+  individually: true
+  excludeDevDependencies: true
+
+functions:
+  main:
+    memorySize: 2048
+    # handler: src/index.handler
+    image: ${env:AWS_ACCOUNT_ID}.dkr.ecr.ca-central-1.amazonaws.com/ar-reports-scraper-${opt:stage, 'production'}-main:latest
+    events:
+      - schedule:
+          method: scheduler
+          rate:
+            # Run at 5:30 EST (America/New_York TZ) every day, accounts for daylight savings
+            - cron(30 17 * * ? *)
+          timezone: America/New_York
+
+custom:
+  offline:
+    useChildProcesses: true

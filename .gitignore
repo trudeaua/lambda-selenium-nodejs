@@ -1,0 +1,8 @@
+node_modules
+dist
+.serverless
+.env
+.env*
+credentials.json
+token.json
+.DS_Store
