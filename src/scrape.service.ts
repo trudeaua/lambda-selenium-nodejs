@@ -10,7 +10,7 @@ export class ScrapeService {
   private readonly auth: { username: string; password: string };
   private readonly loginUrl: string;
   private readonly reportFilename: string;
-  private readonly EL_VISIBLE_TIMEOUT = 30000;
+  private readonly EL_VISIBLE_TIMEOUT = 120_000;
   private readonly DEBUG: boolean;
 
   /**

@@ -46,7 +46,7 @@ functions:
           method: scheduler
           rate:
             # Run at 5:30 EST (America/New_York TZ) every day, accounts for daylight savings
-            - cron(30 17 * * ? *)
+            - cron(30 23 * * ? *)
           timezone: America/New_York
 
 custom:
