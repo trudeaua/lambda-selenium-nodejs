@@ -6,7 +6,7 @@ plugins:
 
 provider:
   name: aws
-  runtime: nodejs18.x
+  runtime: nodejs20.x
   region: ca-central-1
   timeout: 300
   stage: ${opt:stage, 'production'}

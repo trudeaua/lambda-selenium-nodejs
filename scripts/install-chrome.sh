@@ -1,26 +1,24 @@
 #!/usr/bin/bash
+set -e
 
-# VERSIONS
-# https://omahaproxy.appspot.com/
-CHROMIUM_VERSION="114.0.5735.133"
-CHROMIUM_BASE_POSITION="1135561"
-CHROMIUM_URL="https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/Linux_x64%2F$CHROMIUM_BASE_POSITION%2Fchrome-linux.zip?alt=media"
+# Chrome for Testing (115+ uses new download URLs)
+# https://googlechromelabs.github.io/chrome-for-testing/
+CHROME_VERSION="131.0.6778.204"
+BASE_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64"
 
-CHROME_DRIVER_VERSION="114.0.5735.90"
-CHROME_DRIVER_URL="https://chromedriver.storage.googleapis.com/$CHROME_DRIVER_VERSION/chromedriver_linux64.zip"
+CHROME_URL="${BASE_URL}/chrome-linux64.zip"
+CHROME_DRIVER_URL="${BASE_URL}/chromedriver-linux64.zip"
 
-# install chromium
-mkdir -p "/opt/chromium"
-curl -Lo "/opt/chromium/chrome-linux.zip" $CHROMIUM_URL
-unzip -q "/opt/chromium/chrome-linux.zip" -d "/opt/chromium"
-mv /opt/chromium/chrome-linux/* /opt/chromium/
+# install chrome
+mkdir -p "/opt/chrome"
+curl -Lo "/tmp/chrome-linux64.zip" "$CHROME_URL"
+unzip -q "/tmp/chrome-linux64.zip" -d "/opt/chrome"
 
 # install chrome-driver
 mkdir -p "/opt/chromedriver"
-curl -Lo "/opt/chromedriver/chromedriver_linux64.zip" $CHROME_DRIVER_URL
-unzip -q "/opt/chromedriver/chromedriver_linux64.zip" -d "/opt/chromedriver"
-chmod +x "/opt/chromedriver/chromedriver"
+curl -Lo "/tmp/chromedriver-linux64.zip" "$CHROME_DRIVER_URL"
+unzip -q "/tmp/chromedriver-linux64.zip" -d "/opt/chromedriver"
+chmod +x "/opt/chromedriver/chromedriver-linux64/chromedriver"
 
 # cleanup
-rm -rf "/opt/chromium/chrome-linux" "/opt/chromium/chrome-linux.zip"
-rm -rf "/opt/chromedriver/chromedriver_linux64.zip" 
+rm -f "/tmp/chrome-linux64.zip" "/tmp/chromedriver-linux64.zip"

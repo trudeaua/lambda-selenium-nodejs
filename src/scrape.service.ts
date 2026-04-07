@@ -84,8 +84,8 @@ export class ScrapeService {
     let driverPath: string | undefined;
 
     if (isProduction) {
-      binaryPath = "/opt/chromium/chrome";
-      driverPath = "/opt/chromedriver/chromedriver";
+      binaryPath = "/opt/chrome/chrome-linux64/chrome";
+      driverPath = "/opt/chromedriver/chromedriver-linux64/chromedriver";
       if (!fs.existsSync("/tmp/chromedriver.log")) {
         fs.writeFileSync("/tmp/chromedriver.log", "");
       }
