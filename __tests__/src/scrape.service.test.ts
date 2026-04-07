@@ -43,6 +43,7 @@ jest.mock("fs", () => ({
   existsSync: jest.fn(() => true),
   writeFileSync: jest.fn(),
   createReadStream: jest.fn(() => "mock-stream"),
+  readdirSync: jest.fn(() => ["report.pdf"]),
 }));
 
 import { ScrapeService } from "../../src/scrape.service";
@@ -74,6 +75,7 @@ describe("ScrapeService", () => {
       findElement: mockFindElement,
       wait: mockWait,
       quit: mockQuit,
+      sendDevToolsCommand: jest.fn().mockResolvedValue(undefined),
     });
 
     mockFindElement.mockResolvedValue(mockElement);
