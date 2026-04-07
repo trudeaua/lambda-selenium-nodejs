@@ -6,7 +6,7 @@ import chrome from "selenium-webdriver/chrome";
 import { sleep } from "../utils/sleep";
 
 export class ScrapeService {
-  private readonly driver: webdriver.ThenableWebDriver;
+  private readonly driver: chrome.Driver;
   private readonly auth: { username: string; password: string };
   private readonly loginUrl: string;
   private readonly reportFilename: string;
@@ -22,6 +22,19 @@ export class ScrapeService {
     this.loginUrl = process.env.LOGIN_URL ?? "";
     this.reportFilename = process.env.REPORT_FILENAME ?? "";
     this.DEBUG = true;
+  }
+
+  /**
+   * Enable headless downloads via CDP
+   * Must be called after driver is built, before any downloads
+   */
+  public async enableDownloads() {
+    const downloadDir = ScrapeService.getDownloadDir();
+    await this.driver.sendDevToolsCommand("Browser.setDownloadBehavior", {
+      behavior: "allow",
+      downloadPath: downloadDir,
+      eventsEnabled: true,
+    });
   }
 
   /**
@@ -115,13 +128,14 @@ export class ScrapeService {
       "profile.default_content_settings.popups": 0,
       "download.default_directory": ScrapeService.getDownloadDir(),
       directory_upgrade: true,
+      "plugins.always_open_pdf_externally": true,
     };
     chromeOptions.setUserPreferences(prefs);
     chromeOptions.addArguments(...flags);
     builder.setChromeService(service);
     builder.setChromeOptions(chromeOptions);
 
-    const driver = builder.build();
+    const driver = builder.build() as unknown as chrome.Driver;
 
     return driver;
   }
@@ -139,12 +153,18 @@ export class ScrapeService {
     await this.openReportsMenu();
     this.debugLog("opened menu");
 
+    await this.enableDownloads();
+
     this.debugLog("exporting report");
     await this.exportPdfReport();
     this.debugLog("exported report");
 
+    const downloadDir = ScrapeService.getDownloadDir();
+    const files = fs.readdirSync(downloadDir);
+    this.debugLog("files in download dir:", downloadDir, files);
+
     const stream = fs.createReadStream(
-      `${ScrapeService.getDownloadDir()}/${this.reportFilename}`
+      `${downloadDir}/${this.reportFilename}`,
     );
     return stream;
   }
@@ -166,15 +186,15 @@ export class ScrapeService {
     const loginBtn = await this.driver.findElement({ id: "btnLogin" });
     await this.driver.wait(
       until.elementIsVisible(usernameInput),
-      this.EL_VISIBLE_TIMEOUT
+      this.EL_VISIBLE_TIMEOUT,
     );
     await this.driver.wait(
       until.elementIsVisible(passwordInput),
-      this.EL_VISIBLE_TIMEOUT
+      this.EL_VISIBLE_TIMEOUT,
     );
     await this.driver.wait(
       until.elementIsVisible(loginBtn),
-      this.EL_VISIBLE_TIMEOUT
+      this.EL_VISIBLE_TIMEOUT,
     );
     await usernameInput.sendKeys(this.auth.username);
     await passwordInput.sendKeys(this.auth.password);
@@ -191,7 +211,7 @@ export class ScrapeService {
     });
     await this.driver.wait(
       until.elementIsVisible(reportsButton),
-      this.EL_VISIBLE_TIMEOUT
+      this.EL_VISIBLE_TIMEOUT,
     );
     await sleep(2000);
     await reportsButton.click();
@@ -206,7 +226,7 @@ export class ScrapeService {
     });
     await this.driver.wait(
       until.elementIsVisible(reportsMenu),
-      this.EL_VISIBLE_TIMEOUT
+      this.EL_VISIBLE_TIMEOUT,
     );
     const pdfLinkEl = await reportsMenu.findElement(ScrapeService.pdfLink);
     await pdfLinkEl.click();
@@ -223,7 +243,7 @@ export class ScrapeService {
     });
     await this.driver.wait(
       until.elementIsVisible(report),
-      this.EL_VISIBLE_TIMEOUT
+      this.EL_VISIBLE_TIMEOUT,
     );
     await sleep(2000);
   }
