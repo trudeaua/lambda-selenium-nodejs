@@ -5,7 +5,7 @@ import {
 import fs from "fs";
 import { google } from "googleapis";
 import { JWT } from "google-auth-library";
-import { formatDate } from "utils/formatDate";
+import { formatDate } from "../utils/formatDate";
 import { DriveService } from "./drive.service";
 import { GmailService } from "./gmail.service";
 
