@@ -95,7 +95,7 @@ export class ScrapeService {
     const service = new chrome.ServiceBuilder(driverPath);
 
     const flags = [
-      "--headless=new",
+      "--headless",
       "--no-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu",
