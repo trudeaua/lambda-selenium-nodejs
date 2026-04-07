@@ -74,6 +74,7 @@ describe("ScrapeService", () => {
       findElement: mockFindElement,
       wait: mockWait,
       quit: mockQuit,
+      sendDevToolsCommand: jest.fn().mockResolvedValue(undefined),
     });
 
     mockFindElement.mockResolvedValue(mockElement);
