@@ -40,6 +40,8 @@ describe("GoogleService", () => {
     process.env = {
       ...originalEnv,
       GOOGLE_IMPERSONATE_EMAIL: "user@domain.com",
+      GOOGLE_SECRET_ID: "test-secret-id",
+      AWS_REGION: "ca-central-1",
       TO_EMAIL: "to@example.com",
       SUCCESS_CC_EMAILS: "cc1@example.com",
       FAIL_CC_EMAILS: "cc2@example.com",
@@ -62,7 +64,7 @@ describe("GoogleService", () => {
       const service = await GoogleService.create();
       expect(service).toBeInstanceOf(GoogleService);
       expect(mockSend).toHaveBeenCalledWith(
-        expect.objectContaining({ SecretId: "gmailpubsub/google_token" })
+        expect.objectContaining({ SecretId: "test-secret-id" })
       );
     });
   });

@@ -32,9 +32,9 @@ export class GoogleService {
   }
 
   public static async create(): Promise<GoogleService> {
-    const secretsManager = new SecretsManagerClient({ region: "ca-central-1" });
+    const secretsManager = new SecretsManagerClient({ region: process.env.AWS_REGION });
     const response = await secretsManager.send(
-      new GetSecretValueCommand({ SecretId: "gmailpubsub/google_token" })
+      new GetSecretValueCommand({ SecretId: process.env.GOOGLE_SECRET_ID })
     );
 
     const secret: ServiceAccountKey = JSON.parse(response.SecretString!);

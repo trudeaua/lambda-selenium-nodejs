@@ -19,6 +19,8 @@ provider:
     AUTH_USERNAME: ${env:AUTH_USERNAME}
     AUTH_PASSWORD: ${env:AUTH_PASSWORD}
     GOOGLE_IMPERSONATE_EMAIL: ${env:GOOGLE_IMPERSONATE_EMAIL}
+    GOOGLE_SECRET_ID: ${env:GOOGLE_SECRET_ID}
+    TZ: ${env:TZ}
     NODE_ENV: ${opt:stage, 'production'}
     AWS_ACCOUNT_ID: ${env:AWS_ACCOUNT_ID}
     LOGIN_URL: ${env:LOGIN_URL}

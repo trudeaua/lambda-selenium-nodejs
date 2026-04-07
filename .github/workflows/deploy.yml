@@ -3,6 +3,7 @@ name: Deploy
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 env:
   AWS_REGION: ca-central-1
@@ -58,6 +59,8 @@ jobs:
           AUTH_USERNAME: ${{ secrets.AUTH_USERNAME }}
           AUTH_PASSWORD: ${{ secrets.AUTH_PASSWORD }}
           GOOGLE_IMPERSONATE_EMAIL: ${{ vars.GOOGLE_IMPERSONATE_EMAIL }}
+          GOOGLE_SECRET_ID: ${{ vars.GOOGLE_SECRET_ID }}
+          TZ: ${{ vars.TZ }}
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
           LOGIN_URL: ${{ vars.LOGIN_URL }}
           REPORT_FILENAME: ${{ vars.REPORT_FILENAME }}

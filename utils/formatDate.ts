@@ -4,7 +4,7 @@ import utc from "dayjs/plugin/utc";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
-const TZ = "America/New_York";
+const TZ = process.env.TZ ?? "America/New_York";
 dayjs.tz.setDefault(TZ);
 
 export function formatDate(format: string) {
