@@ -1,9 +1,8 @@
 import fs from "fs";
-import { OAuth2Client } from "google-auth-library";
+import { JWT } from "google-auth-library";
 import { google } from "googleapis";
 import type { drive_v3 } from "googleapis/build/src/apis/drive/v3";
 import { formatDate } from "../utils/formatDate";
-import path from "path";
 
 export class DriveService {
   private readonly drive: drive_v3.Resource$Files;
@@ -11,8 +10,8 @@ export class DriveService {
   /**
    * Service to handle file-related actions such as upload
    */
-  public constructor(client: OAuth2Client) {
-    this.drive = google.drive({ version: "v3", auth: client }).files;
+  public constructor(auth: JWT) {
+    this.drive = google.drive({ version: "v3", auth }).files;
     this.DRIVE_FOLDER_ID = process.env.DRIVE_FOLDER_ID ?? "";
   }
 

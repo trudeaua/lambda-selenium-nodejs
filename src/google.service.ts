@@ -1,8 +1,18 @@
+import {
+  SecretsManagerClient,
+  GetSecretValueCommand,
+} from "@aws-sdk/client-secrets-manager";
 import fs from "fs";
 import { google } from "googleapis";
+import { JWT } from "google-auth-library";
 import { formatDate } from "utils/formatDate";
 import { DriveService } from "./drive.service";
 import { GmailService } from "./gmail.service";
+
+interface ServiceAccountKey {
+  client_email: string;
+  private_key: string;
+}
 
 export class GoogleService {
   private readonly driveService: DriveService;
@@ -12,19 +22,35 @@ export class GoogleService {
   private readonly FAIL_CC_EMAILS: string | undefined;
   private readonly reportFriendlyName: string;
 
-  public constructor() {
-    const clientId = process.env.GOOGLE_DRIVE_CLIENT_ID;
-    const clientSecret = process.env.GOOGLE_DRIVE_CLIENT_SECRET;
-    const redirectUri = process.env.GOOGLE_DRIVE_REDIRECT_URI;
-    const refreshToken = process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
-    const client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
-    client.setCredentials({ refresh_token: refreshToken });
-    this.driveService = new DriveService(client);
-    this.gmailService = new GmailService(client);
+  private constructor(auth: JWT) {
+    this.driveService = new DriveService(auth);
+    this.gmailService = new GmailService(auth);
     this.TO_EMAIL = process.env.TO_EMAIL ?? "";
     this.FAIL_CC_EMAILS = process.env.FAIL_CC_EMAILS;
     this.SUCCESS_CC_EMAILS = process.env.SUCCESS_CC_EMAILS;
     this.reportFriendlyName = process.env.REPORT_FRIENDLY_NAME ?? "Report";
+  }
+
+  public static async create(): Promise<GoogleService> {
+    const secretsManager = new SecretsManagerClient({ region: "ca-central-1" });
+    const response = await secretsManager.send(
+      new GetSecretValueCommand({ SecretId: "gmailpubsub/google_token" })
+    );
+
+    const secret: ServiceAccountKey = JSON.parse(response.SecretString!);
+    const subject = process.env.GOOGLE_IMPERSONATE_EMAIL;
+
+    const auth = new google.auth.JWT({
+      email: secret.client_email,
+      key: secret.private_key,
+      scopes: [
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/gmail.send",
+      ],
+      subject,
+    });
+
+    return new GoogleService(auth);
   }
 
   /**

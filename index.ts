@@ -10,7 +10,7 @@ export const handler = async (
   _context: Context | undefined
 ) => {
   const scrapeService = new ScrapeService();
-  const googleService = new GoogleService();
+  const googleService = await GoogleService.create();
 
   try {
     const report = await scrapeService.scrapeReport();

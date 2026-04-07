@@ -2,7 +2,8 @@ node_modules
 dist
 .serverless
 .env
-.env*
+.env.*
+!.env.example
 credentials.json
 token.json
 .DS_Store

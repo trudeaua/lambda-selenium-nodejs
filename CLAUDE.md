@@ -4,7 +4,7 @@ Selenium WebDriver + Node.js web scraper deployed as a Docker-based AWS Lambda. 
 
 ## Tech Stack
 
-- **Runtime:** Node.js 18, TypeScript 5
+- **Runtime:** Node.js 20, TypeScript 5
 - **Framework:** Serverless Framework v3 (AWS Lambda via Docker/ECR)
 - **Build:** esbuild via `esbuild-node-tsc` (`etsc`)
 - **Browser:** Selenium WebDriver (Chromium, headless in Docker)
@@ -43,7 +43,8 @@ Configured via `.env` and referenced in `serverless.yml`:
 - `AUTH_USERNAME` / `AUTH_PASSWORD` — Login credentials for target site
 - `LOGIN_URL` — URL to scrape
 - `REPORT_FILENAME` / `REPORT_FRIENDLY_NAME` — Report file identification
-- `GOOGLE_DRIVE_CLIENT_ID` / `CLIENT_SECRET` / `REDIRECT_URI` / `REFRESH_TOKEN` — Google OAuth
+- `GOOGLE_IMPERSONATE_EMAIL` — Google Workspace user email to impersonate via domain-wide delegation
+- Service account key JSON is stored in AWS Secrets Manager (`gmailpubsub/google_token` in ca-central-1)
 - `DRIVE_FOLDER_ID` — Target Drive folder
 - `TO_EMAIL` / `SUCCESS_CC_EMAILS` / `FAIL_CC_EMAILS` — Notification recipients
 - `AWS_ACCOUNT_ID` — For ECR image references

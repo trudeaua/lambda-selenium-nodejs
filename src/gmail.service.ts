@@ -1,4 +1,4 @@
-import { OAuth2Client } from "google-auth-library";
+import { JWT } from "google-auth-library";
 import { google } from "googleapis";
 import type { gmail_v1 } from "googleapis/build/src/apis/gmail/v1";
 export class GmailService {
@@ -7,10 +7,10 @@ export class GmailService {
   /**
    * Service to handle notification-related actions like sending emails
    */
-  public constructor(client: OAuth2Client) {
+  public constructor(auth: JWT) {
     this.mailService = google.gmail({
       version: "v1",
-      auth: client,
+      auth,
     }).users.messages;
   }
 
