@@ -22,7 +22,7 @@
     "@google-cloud/local-auth": "^3.0.1",
     "@types/aws-lambda": "^8.10.147",
     "@types/jest": "^30.0.0",
-    "@types/node": "^20.17.12",
+    "@types/node": "^22.15.3",
     "@types/selenium-webdriver": "^4.1.28",
     "esbuild": "^0.24.2",
     "esbuild-node-tsc": "^2.0.5",

@@ -1,4 +1,4 @@
-FROM public.ecr.aws/lambda/nodejs:20 AS builder
+FROM public.ecr.aws/lambda/nodejs:22 AS builder
 WORKDIR /usr/app
 # Compile TS into JS
 COPY package.json index.ts yarn.lock tsconfig.json ./
@@ -10,7 +10,7 @@ RUN npm install -g yarn
 RUN yarn
 RUN yarn build
 
-FROM public.ecr.aws/lambda/nodejs:20
+FROM public.ecr.aws/lambda/nodejs:22
 WORKDIR /
 # Install chrome dependencies (AL2023 uses dnf instead of yum)
 RUN dnf install -y unzip atk at-spi2-atk gtk3 cups-libs pango libdrm \
