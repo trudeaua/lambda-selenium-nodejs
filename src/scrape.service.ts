@@ -5,12 +5,31 @@ import webdriver, { By, until } from "selenium-webdriver";
 import chrome from "selenium-webdriver/chrome";
 import { sleep } from "../utils/sleep";
 
+const REPORT_BODY_ID = "rvMainReportView_ctl13";
+const EXPORT_BUTTON_ID = "rvMainReportView_ctl09_ctl04_ctl00";
+const EXPORT_MENU_ID = "rvMainReportView_ctl09_ctl04_ctl00_Menu";
+const CHROMEDRIVER_LOG_PATH = "/tmp/chromedriver.log";
+
+/** Page state captured when a scrape fails, so the failure email can explain what the browser saw */
+export interface ScrapeDiagnostics {
+  currentUrl?: string;
+  screenshotBase64?: string;
+  pageSource?: string;
+  chromedriverLog?: string;
+  captureErrors?: string[];
+}
+
 export class ScrapeService {
   private readonly driver: chrome.Driver;
   private readonly auth: { username: string; password: string };
   private readonly loginUrl: string;
   private readonly reportFilename: string;
   private readonly EL_VISIBLE_TIMEOUT = 120_000;
+  /** The export menu opens in well under a second when the click lands, so a long wait only burns Lambda budget */
+  private readonly MENU_OPEN_TIMEOUT = 10_000;
+  private readonly MENU_CLICK_ATTEMPTS = 3;
+  private readonly PAGE_SOURCE_MAX_CHARS = 512_000;
+  private readonly LOG_TAIL_MAX_CHARS = 256_000;
   private readonly DEBUG: boolean;
 
   /**
@@ -99,10 +118,10 @@ export class ScrapeService {
     if (isProduction) {
       binaryPath = "/opt/chrome/chrome-linux64/chrome";
       driverPath = "/opt/chromedriver/chromedriver-linux64/chromedriver";
-      if (!fs.existsSync("/tmp/chromedriver.log")) {
-        fs.writeFileSync("/tmp/chromedriver.log", "");
+      if (!fs.existsSync(CHROMEDRIVER_LOG_PATH)) {
+        fs.writeFileSync(CHROMEDRIVER_LOG_PATH, "");
       }
-      chromeOptions.setChromeLogFile("/tmp/chromedriver.log");
+      chromeOptions.setChromeLogFile(CHROMEDRIVER_LOG_PATH);
     }
 
     const service = new chrome.ServiceBuilder(driverPath);
@@ -145,28 +164,70 @@ export class ScrapeService {
    * @returns Buffer of the report file
    */
   public async scrapeReport() {
-    this.debugLog("logging in");
-    await this.login();
-    this.debugLog("logged in");
-
-    this.debugLog("opening menu");
-    await this.openReportsMenu();
-    this.debugLog("opened menu");
-
-    await this.enableDownloads();
-
-    this.debugLog("exporting report");
-    await this.exportPdfReport();
-    this.debugLog("exported report");
-
-    const downloadDir = ScrapeService.getDownloadDir();
-    const files = fs.readdirSync(downloadDir);
-    this.debugLog("files in download dir:", downloadDir, files);
-
-    const stream = fs.createReadStream(
-      `${downloadDir}/${this.reportFilename}`,
+    await this.step("login", () => this.login());
+    const reportsMenu = await this.step("open reports menu", () =>
+      this.openReportsMenu()
     );
-    return stream;
+    await this.step("enable downloads", () => this.enableDownloads());
+    await this.step("export pdf report", () => this.exportPdfReport(reportsMenu));
+
+    return this.step("read downloaded report", async () => {
+      const downloadDir = ScrapeService.getDownloadDir();
+      const files = fs.readdirSync(downloadDir);
+      this.debugLog("files in download dir:", downloadDir, files);
+
+      return fs.createReadStream(`${downloadDir}/${this.reportFilename}`);
+    });
+  }
+
+  /**
+   * Capture whatever the browser can still tell us about the page a failed run ended on
+   * @description Every capture is independent and best-effort, the driver may already be dead
+   * @returns Page state at the time of failure
+   */
+  public async captureDiagnostics(): Promise<ScrapeDiagnostics> {
+    const diagnostics: ScrapeDiagnostics = {};
+    const captureErrors: string[] = [];
+
+    await this.tryCapture("currentUrl", captureErrors, async () => {
+      diagnostics.currentUrl = await this.driver.getCurrentUrl();
+    });
+    await this.tryCapture("screenshot", captureErrors, async () => {
+      diagnostics.screenshotBase64 = await this.driver.takeScreenshot();
+    });
+    await this.tryCapture("pageSource", captureErrors, async () => {
+      const source = await this.driver.getPageSource();
+      diagnostics.pageSource = ScrapeService.truncate(
+        source,
+        this.PAGE_SOURCE_MAX_CHARS,
+        "head"
+      );
+    });
+    await this.tryCapture("chromedriverLog", captureErrors, async () => {
+      if (!fs.existsSync(CHROMEDRIVER_LOG_PATH)) {
+        return;
+      }
+      const log = fs.readFileSync(CHROMEDRIVER_LOG_PATH, "utf8");
+      diagnostics.chromedriverLog = ScrapeService.truncate(
+        log,
+        this.LOG_TAIL_MAX_CHARS,
+        "tail"
+      );
+    });
+
+    if (captureErrors.length) {
+      diagnostics.captureErrors = captureErrors;
+    }
+
+    this.debugLog("captured diagnostics", {
+      currentUrl: diagnostics.currentUrl,
+      screenshotChars: diagnostics.screenshotBase64?.length ?? 0,
+      pageSourceChars: diagnostics.pageSource?.length ?? 0,
+      chromedriverLogChars: diagnostics.chromedriverLog?.length ?? 0,
+      captureErrors,
+    });
+
+    return diagnostics;
   }
 
   /**
@@ -174,6 +235,58 @@ export class ScrapeService {
    */
   public async destroy() {
     await this.driver.quit();
+  }
+
+  /**
+   * Run a named step, tagging any error it throws with the step name
+   * @description A bare TimeoutError says nothing about where the scrape got to
+   */
+  private async step<T>(name: string, run: () => Promise<T>): Promise<T> {
+    this.debugLog(`start: ${name}`);
+    try {
+      const result = await run();
+      this.debugLog(`done: ${name}`);
+      return result;
+    } catch (e) {
+      if (e instanceof Error) {
+        e.message = `[${name}] ${e.message}`;
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Run a single best-effort diagnostic capture, recording rather than throwing on failure
+   */
+  private async tryCapture(
+    label: string,
+    errors: string[],
+    run: () => Promise<void>
+  ) {
+    try {
+      await run();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      errors.push(`${label}: ${message}`);
+      console.error(`failed to capture ${label}`, message);
+    }
+  }
+
+  /**
+   * Trim a value down to a size an email can carry
+   */
+  private static truncate(
+    value: string,
+    maxChars: number,
+    keep: "head" | "tail"
+  ) {
+    if (value.length <= maxChars) {
+      return value;
+    }
+    const omitted = value.length - maxChars;
+    return keep === "head"
+      ? `${value.slice(0, maxChars)}\n...[truncated ${omitted} chars]`
+      : `...[truncated ${omitted} chars]\n${value.slice(-maxChars)}`;
   }
 
   /**
@@ -203,31 +316,56 @@ export class ScrapeService {
 
   /**
    * Open the reports menu
+   * @description The menu is a JS dropdown that lives in the DOM hidden, so a click that doesn't
+   * register looks identical to a click that did until the menu fails to appear. Verify it opened
+   * and click again if it didn't.
+   * @returns The opened reports menu
    */
   private async openReportsMenu() {
     await this.waitForReportToBeVisible();
     const reportsButton = await this.driver.findElement({
-      id: "rvMainReportView_ctl09_ctl04_ctl00",
+      id: EXPORT_BUTTON_ID,
     });
     await this.driver.wait(
       until.elementIsVisible(reportsButton),
       this.EL_VISIBLE_TIMEOUT,
     );
     await sleep(2000);
-    await reportsButton.click();
+
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.MENU_CLICK_ATTEMPTS; attempt++) {
+      await reportsButton.click();
+      try {
+        const reportsMenu = await this.driver.findElement({
+          id: EXPORT_MENU_ID,
+        });
+        await this.driver.wait(
+          until.elementIsVisible(reportsMenu),
+          this.MENU_OPEN_TIMEOUT,
+        );
+        this.debugLog(`export menu opened on attempt ${attempt}`);
+        return reportsMenu;
+      } catch (e) {
+        lastError = e;
+        this.debugLog(
+          `export menu did not open on attempt ${attempt}`,
+          e instanceof Error ? e.message : e
+        );
+        await sleep(2000);
+      }
+    }
+
+    const reason = lastError instanceof Error ? lastError.message : String(lastError);
+    throw new Error(
+      `export menu never became visible after ${this.MENU_CLICK_ATTEMPTS} clicks on #${EXPORT_BUTTON_ID}: ${reason}`
+    );
   }
 
   /**
    * Download the PDF report file
+   * @param reportsMenu The already-open reports menu
    */
-  private async exportPdfReport() {
-    const reportsMenu = await this.driver.findElement({
-      id: "rvMainReportView_ctl09_ctl04_ctl00_Menu",
-    });
-    await this.driver.wait(
-      until.elementIsVisible(reportsMenu),
-      this.EL_VISIBLE_TIMEOUT,
-    );
+  private async exportPdfReport(reportsMenu: webdriver.WebElement) {
     const pdfLinkEl = await reportsMenu.findElement(ScrapeService.pdfLink);
     await pdfLinkEl.click();
     await sleep(10000);
@@ -239,7 +377,7 @@ export class ScrapeService {
    */
   private async waitForReportToBeVisible() {
     const report = await this.driver.findElement({
-      id: "rvMainReportView_ctl13",
+      id: REPORT_BODY_ID,
     });
     await this.driver.wait(
       until.elementIsVisible(report),

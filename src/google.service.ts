@@ -7,7 +7,8 @@ import { google } from "googleapis";
 import { JWT } from "google-auth-library";
 import { formatDate } from "../utils/formatDate";
 import { DriveService } from "./drive.service";
-import { GmailService } from "./gmail.service";
+import { GmailService, type EmailAttachment } from "./gmail.service";
+import type { ScrapeDiagnostics } from "./scrape.service";
 
 interface ServiceAccountKey {
   client_email: string;
@@ -63,17 +64,73 @@ export class GoogleService {
   }
 
   /**
-   * Send a notification indicating that the report upload was successful
+   * Send a notification indicating that the report could not be fetched
+   * @param error The error that ended the run
+   * @param diagnostics Page state captured before the browser was torn down
    */
-  public async sendFailureNotification(error: Error) {
+  public async sendFailureNotification(
+    error: Error,
+    diagnostics?: ScrapeDiagnostics
+  ) {
+    const bodyLines = [
+      `Failed to get ${this.reportFriendlyName}`,
+      "",
+      `Diagnostics: ${error.message}`,
+      "",
+      error.stack ?? "",
+    ];
+
+    if (diagnostics?.currentUrl) {
+      bodyLines.push("", `URL at failure: ${diagnostics.currentUrl}`);
+    }
+    if (diagnostics?.captureErrors?.length) {
+      bodyLines.push(
+        "",
+        `Could not capture: ${diagnostics.captureErrors.join("; ")}`
+      );
+    }
+
     await this.gmailService.sendEmail({
       to: this.TO_EMAIL,
       cc: this.FAIL_CC_EMAILS,
       subject: `Failed to get ${this.reportFriendlyName}`,
-      body: `Failed to get ${this.reportFriendlyName}\nDiagnostics:${
-        error.message
-      }\n${error.stack ?? ""}`,
+      body: bodyLines.join("\n"),
+      attachments: GoogleService.diagnosticAttachments(diagnostics),
     });
+  }
+
+  /**
+   * Turn captured page state into email attachments
+   */
+  private static diagnosticAttachments(diagnostics?: ScrapeDiagnostics) {
+    const attachments: EmailAttachment[] = [];
+    if (!diagnostics) {
+      return attachments;
+    }
+
+    if (diagnostics.screenshotBase64) {
+      attachments.push({
+        filename: "screenshot.png",
+        mimeType: "image/png",
+        content: Buffer.from(diagnostics.screenshotBase64, "base64"),
+      });
+    }
+    if (diagnostics.pageSource) {
+      attachments.push({
+        filename: "page-source.html",
+        mimeType: "text/html",
+        content: Buffer.from(diagnostics.pageSource, "utf8"),
+      });
+    }
+    if (diagnostics.chromedriverLog) {
+      attachments.push({
+        filename: "chromedriver.log",
+        mimeType: "text/plain",
+        content: Buffer.from(diagnostics.chromedriverLog, "utf8"),
+      });
+    }
+
+    return attachments;
   }
 
   /**

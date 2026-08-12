@@ -106,5 +106,48 @@ describe("GoogleService", () => {
       const body = mockSendEmail.mock.calls[0][0].body;
       expect(body).toContain("something broke");
     });
+
+    it("should attach captured diagnostics", async () => {
+      mockSendEmail.mockResolvedValue({});
+      const service = await GoogleService.create();
+
+      await service.sendFailureNotification(new Error("menu never opened"), {
+        currentUrl: "https://example.com/reports",
+        screenshotBase64: Buffer.from("png bytes").toString("base64"),
+        pageSource: "<html></html>",
+        chromedriverLog: "driver log",
+      });
+
+      const { body, attachments } = mockSendEmail.mock.calls[0][0];
+      expect(body).toContain("URL at failure: https://example.com/reports");
+      expect(attachments.map((a: { filename: string }) => a.filename)).toEqual([
+        "screenshot.png",
+        "page-source.html",
+        "chromedriver.log",
+      ]);
+      expect(attachments[0].content).toEqual(Buffer.from("png bytes"));
+    });
+
+    it("should report diagnostics that could not be captured", async () => {
+      mockSendEmail.mockResolvedValue({});
+      const service = await GoogleService.create();
+
+      await service.sendFailureNotification(new Error("boom"), {
+        captureErrors: ["screenshot: no such window"],
+      });
+
+      const { body, attachments } = mockSendEmail.mock.calls[0][0];
+      expect(body).toContain("Could not capture: screenshot: no such window");
+      expect(attachments).toEqual([]);
+    });
+
+    it("should send with no attachments when there are no diagnostics", async () => {
+      mockSendEmail.mockResolvedValue({});
+      const service = await GoogleService.create();
+
+      await service.sendFailureNotification(new Error("boom"));
+
+      expect(mockSendEmail.mock.calls[0][0].attachments).toEqual([]);
+    });
   });
 });

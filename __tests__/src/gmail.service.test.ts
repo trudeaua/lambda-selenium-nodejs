@@ -73,6 +73,73 @@ describe("GmailService", () => {
       expect(decoded).not.toContain("cc:");
     });
 
+    it("should encode attachments as multipart parts", async () => {
+      mockSend.mockResolvedValue({ status: 200, data: {} });
+
+      await service.sendEmail({
+        to: "user@example.com",
+        subject: "Failed",
+        body: "Something broke",
+        attachments: [
+          {
+            filename: "screenshot.png",
+            mimeType: "image/png",
+            content: Buffer.from("fake png bytes"),
+          },
+        ],
+      });
+
+      const raw = mockSend.mock.calls[0][0].requestBody.raw;
+      const decoded = Buffer.from(raw, "base64url").toString();
+
+      expect(decoded).toContain("Content-Type: multipart/mixed; boundary=");
+      expect(decoded).toContain("Something broke");
+      expect(decoded).toContain(
+        'Content-Disposition: attachment; filename="screenshot.png"'
+      );
+      expect(decoded).toContain("Content-Type: image/png");
+      expect(decoded).toContain(Buffer.from("fake png bytes").toString("base64"));
+    });
+
+    it("should not use multipart when there are no attachments", async () => {
+      mockSend.mockResolvedValue({ status: 200, data: {} });
+
+      await service.sendEmail({
+        to: "user@example.com",
+        subject: "Test",
+        body: "Body",
+        attachments: [],
+      });
+
+      const raw = mockSend.mock.calls[0][0].requestBody.raw;
+      const decoded = Buffer.from(raw, "base64url").toString();
+      expect(decoded).not.toContain("multipart/mixed");
+    });
+
+    it("should wrap attachment base64 at 76 characters", async () => {
+      mockSend.mockResolvedValue({ status: 200, data: {} });
+
+      await service.sendEmail({
+        to: "user@example.com",
+        subject: "Test",
+        body: "Body",
+        attachments: [
+          {
+            filename: "big.txt",
+            mimeType: "text/plain",
+            content: Buffer.from("a".repeat(1000)),
+          },
+        ],
+      });
+
+      const raw = mockSend.mock.calls[0][0].requestBody.raw;
+      const decoded: string = Buffer.from(raw, "base64url").toString();
+      const longLines = decoded
+        .split("\r\n")
+        .filter((line) => line.length > 76 && !line.startsWith("Content-"));
+      expect(longLines).toEqual([]);
+    });
+
     it("should produce base64url encoding (no +, /, or trailing =)", async () => {
       mockSend.mockResolvedValue({ status: 200, data: {} });
 
