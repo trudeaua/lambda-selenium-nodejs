@@ -3,6 +3,7 @@ const mockFindElement = jest.fn();
 const mockWait = jest.fn();
 const mockQuit = jest.fn();
 const mockBuild = jest.fn();
+const mockExecuteScript = jest.fn();
 const mockTakeScreenshot = jest.fn();
 const mockGetPageSource = jest.fn();
 const mockGetCurrentUrl = jest.fn();
@@ -39,58 +40,52 @@ jest.mock("selenium-webdriver/chrome", () => ({
 }));
 
 jest.mock("../../utils/sleep", () => ({
-  sleep: jest.fn().mockResolvedValue(undefined),
+  sleep: jest.fn(),
 }));
 
 jest.mock("fs", () => ({
   ...jest.requireActual("fs"),
-  existsSync: jest.fn(() => true),
+  existsSync: jest.fn(),
+  statSync: jest.fn(),
+  unlinkSync: jest.fn(),
   writeFileSync: jest.fn(),
   readFileSync: jest.fn(() => "chromedriver log contents"),
   createReadStream: jest.fn(() => "mock-stream"),
-  readdirSync: jest.fn(() => ["report.pdf"]),
+  readdirSync: jest.fn(() => []),
 }));
 
 import fs from "fs";
+import os from "os";
+import path from "path";
 import { ScrapeService } from "../../src/scrape.service";
+import { sleep } from "../../utils/sleep";
 
-const EXPORT_BUTTON_ID = "rvMainReportView_ctl09_ctl04_ctl00";
-const EXPORT_MENU_ID = "rvMainReportView_ctl09_ctl04_ctl00_Menu";
-
-interface MockElement {
-  id: string;
-  sendKeys: jest.Mock;
-  click: jest.Mock;
-  getAttribute: jest.Mock;
-  findElements: jest.Mock;
-  findElement: jest.Mock;
-}
+const CHROMEDRIVER_LOG = "/tmp/chromedriver.log";
+const POLL_INTERVAL = 500;
 
 describe("ScrapeService", () => {
   const originalEnv = process.env;
-  let elementsById: Record<string, MockElement>;
+  const reportPath = path.join(os.homedir(), "Downloads", "report.pdf");
+  const partialPath = `${reportPath}.crdownload`;
 
-  const element = (id: string): MockElement => {
-    if (!elementsById[id]) {
-      elementsById[id] = {
-        id,
-        sendKeys: jest.fn(),
-        click: jest.fn(),
-        getAttribute: jest.fn(),
-        findElements: jest.fn(),
-        findElement: jest.fn(),
-      };
-    }
-    return elementsById[id];
+  /** Files the mocked fs reports as existing */
+  let presentFiles: Set<string>;
+  /** Virtual clock so download polling doesn't wait in real time */
+  let now: number;
+
+  const mockElement = {
+    sendKeys: jest.fn(),
+    click: jest.fn(),
+    findElement: jest.fn(),
+    findElements: jest.fn(),
   };
-
-  /** Condition objects handed to driver.wait carry the element they were built from */
-  const waitedOn = (condition: unknown) =>
-    (condition as { element?: MockElement })?.element?.id;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    elementsById = {};
+    presentFiles = new Set();
+    now = 1_000_000;
+    jest.spyOn(Date, "now").mockImplementation(() => now);
+
     process.env = {
       ...originalEnv,
       AUTH_USERNAME: "testuser",
@@ -105,21 +100,38 @@ describe("ScrapeService", () => {
       findElement: mockFindElement,
       wait: mockWait,
       quit: mockQuit,
+      executeScript: mockExecuteScript,
       takeScreenshot: mockTakeScreenshot,
       getPageSource: mockGetPageSource,
       getCurrentUrl: mockGetCurrentUrl,
       sendDevToolsCommand: jest.fn().mockResolvedValue(undefined),
     });
 
-    mockFindElement.mockImplementation(async (locator: { id: string }) =>
-      element(locator.id)
-    );
-    mockWait.mockResolvedValue(undefined);
     mockGet.mockResolvedValue(undefined);
-    element(EXPORT_MENU_ID).findElement.mockResolvedValue({ click: jest.fn() });
+    mockWait.mockResolvedValue(undefined);
+    mockFindElement.mockResolvedValue(mockElement);
+
+    // The export triggers a download that lands immediately unless a test says otherwise
+    mockExecuteScript.mockImplementation(async () => {
+      presentFiles.add(reportPath);
+      return "ok";
+    });
+
+    (sleep as jest.Mock).mockImplementation(async (ms: number) => {
+      now += ms;
+    });
+    (fs.existsSync as jest.Mock).mockImplementation((p: string) =>
+      presentFiles.has(String(p))
+    );
+    (fs.statSync as jest.Mock).mockImplementation(() => ({ size: 50_000 }));
+    (fs.unlinkSync as jest.Mock).mockImplementation((p: string) => {
+      presentFiles.delete(String(p));
+    });
+    (fs.readdirSync as jest.Mock).mockImplementation(() => [...presentFiles]);
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     process.env = originalEnv;
   });
 
@@ -138,62 +150,69 @@ describe("ScrapeService", () => {
   });
 
   describe("scrapeReport", () => {
-    it("should login, open menu, export, and return a read stream", async () => {
+    it("should login, export, and return a read stream", async () => {
       const service = new ScrapeService();
       const result = await service.scrapeReport();
 
       expect(mockGet).toHaveBeenCalledWith("https://example.com/login");
+      expect(fs.createReadStream).toHaveBeenCalledWith(reportPath);
       expect(result).toBe("mock-stream");
     });
 
-    it("should click the export button once when the menu opens right away", async () => {
+    it("should trigger the export through the viewer's exportReport method", async () => {
       const service = new ScrapeService();
       await service.scrapeReport();
 
-      expect(element(EXPORT_BUTTON_ID).click).toHaveBeenCalledTimes(1);
+      expect(mockExecuteScript).toHaveBeenCalledTimes(1);
+      const [script, viewerId] = mockExecuteScript.mock.calls[0];
+      expect(script).toContain("exportReport");
+      expect(script).toContain('viewer.exportReport("PDF")');
+      expect(viewerId).toBe("rvMainReportView");
     });
 
-    it("should re-click the export button until the menu becomes visible", async () => {
-      let menuChecks = 0;
-      mockWait.mockImplementation(async (condition: unknown) => {
-        if (waitedOn(condition) === EXPORT_MENU_ID) {
-          menuChecks += 1;
-          if (menuChecks < 3) {
-            throw new Error("Waiting until element is visible\nWait timed out");
-          }
-        }
-      });
-
+    it("should never look up the export dropdown", async () => {
       const service = new ScrapeService();
-      const result = await service.scrapeReport();
+      await service.scrapeReport();
 
-      expect(element(EXPORT_BUTTON_ID).click).toHaveBeenCalledTimes(3);
-      expect(result).toBe("mock-stream");
+      const lookedUpIds = mockFindElement.mock.calls.map((call) => call[0]?.id);
+      expect(lookedUpIds).not.toContain("rvMainReportView_ctl09_ctl04_ctl00");
+      expect(lookedUpIds).not.toContain(
+        "rvMainReportView_ctl09_ctl04_ctl00_Menu"
+      );
     });
 
-    it("should throw a descriptive error when the menu never opens", async () => {
-      mockWait.mockImplementation(async (condition: unknown) => {
-        if (waitedOn(condition) === EXPORT_MENU_ID) {
-          throw new Error("Waiting until element is visible\nWait timed out");
-        }
+    it("should wait for the report body to be visible before exporting", async () => {
+      const service = new ScrapeService();
+      await service.scrapeReport();
+
+      expect(mockFindElement).toHaveBeenCalledWith({
+        id: "rvMainReportView_ctl13",
       });
+      expect(mockWait.mock.invocationCallOrder[0]).toBeLessThan(
+        mockExecuteScript.mock.invocationCallOrder[0]
+      );
+    });
+
+    it("should throw when the viewer component is missing", async () => {
+      mockExecuteScript.mockResolvedValue(
+        "report viewer component rvMainReportView not found"
+      );
 
       const service = new ScrapeService();
 
       await expect(service.scrapeReport()).rejects.toThrow(
-        /export menu never became visible after 3 clicks/
+        "[export pdf report] could not trigger the PDF export: report viewer component rvMainReportView not found"
       );
-      expect(element(EXPORT_BUTTON_ID).click).toHaveBeenCalledTimes(3);
     });
 
-    it("should wait a short timeout on the menu, not the full element timeout", async () => {
-      const service = new ScrapeService();
-      await service.scrapeReport();
+    it("should throw when the viewer has no exportReport method", async () => {
+      mockExecuteScript.mockResolvedValue("viewer has no exportReport method");
 
-      const menuWait = mockWait.mock.calls.find(
-        (call) => waitedOn(call[0]) === EXPORT_MENU_ID
+      const service = new ScrapeService();
+
+      await expect(service.scrapeReport()).rejects.toThrow(
+        /viewer has no exportReport method/
       );
-      expect(menuWait?.[1]).toBe(10_000);
     });
 
     it("should name the failing step in the error message", async () => {
@@ -207,7 +226,116 @@ describe("ScrapeService", () => {
     });
   });
 
+  describe("stale report handling", () => {
+    it("should delete a report left by an earlier run before exporting", async () => {
+      presentFiles.add(reportPath);
+
+      const service = new ScrapeService();
+      await service.scrapeReport();
+
+      expect(fs.unlinkSync).toHaveBeenCalledWith(reportPath);
+      expect((fs.unlinkSync as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan(
+        mockExecuteScript.mock.invocationCallOrder[0]
+      );
+    });
+
+    it("should not delete anything when no earlier report exists", async () => {
+      const service = new ScrapeService();
+      await service.scrapeReport();
+
+      expect(fs.unlinkSync).not.toHaveBeenCalled();
+    });
+
+    it("should fail rather than reuse a stale report when the export downloads nothing", async () => {
+      presentFiles.add(reportPath);
+      mockExecuteScript.mockResolvedValue("ok");
+
+      const service = new ScrapeService();
+
+      await expect(service.scrapeReport()).rejects.toThrow(
+        /report did not download to/
+      );
+    });
+  });
+
+  describe("waiting for the download", () => {
+    it("should poll until the file appears", async () => {
+      let polls = 0;
+      mockExecuteScript.mockResolvedValue("ok");
+      (sleep as jest.Mock).mockImplementation(async (ms: number) => {
+        now += ms;
+        if (ms === POLL_INTERVAL) {
+          polls += 1;
+          if (polls === 3) {
+            presentFiles.add(reportPath);
+          }
+        }
+      });
+
+      const service = new ScrapeService();
+      const result = await service.scrapeReport();
+
+      expect(polls).toBe(3);
+      expect(result).toBe("mock-stream");
+    });
+
+    it("should keep waiting while a .crdownload partial is present", async () => {
+      let polls = 0;
+      mockExecuteScript.mockImplementation(async () => {
+        presentFiles.add(reportPath);
+        presentFiles.add(partialPath);
+        return "ok";
+      });
+      (sleep as jest.Mock).mockImplementation(async (ms: number) => {
+        now += ms;
+        if (ms === POLL_INTERVAL) {
+          polls += 1;
+          if (polls === 2) {
+            presentFiles.delete(partialPath);
+          }
+        }
+      });
+
+      const service = new ScrapeService();
+      await service.scrapeReport();
+
+      expect(polls).toBe(2);
+    });
+
+    it("should throw when the download never arrives", async () => {
+      mockExecuteScript.mockResolvedValue("ok");
+
+      const service = new ScrapeService();
+
+      await expect(service.scrapeReport()).rejects.toThrow(
+        /report did not download to .*report\.pdf within 60000ms/
+      );
+    });
+
+    it("should throw when the downloaded file is too small to be the report", async () => {
+      (fs.statSync as jest.Mock).mockReturnValue({ size: 200 });
+
+      const service = new ScrapeService();
+
+      await expect(service.scrapeReport()).rejects.toThrow(
+        "is only 200 bytes, expected at least 1024"
+      );
+    });
+
+    it("should accept a file at the size floor", async () => {
+      (fs.statSync as jest.Mock).mockReturnValue({ size: 1024 });
+
+      const service = new ScrapeService();
+
+      await expect(service.scrapeReport()).resolves.toBe("mock-stream");
+    });
+  });
+
   describe("captureDiagnostics", () => {
+    beforeEach(() => {
+      presentFiles.add(CHROMEDRIVER_LOG);
+    });
+
     it("should collect url, screenshot, page source, and chromedriver log", async () => {
       mockGetCurrentUrl.mockResolvedValue("https://example.com/reports");
       mockTakeScreenshot.mockResolvedValue("c2NyZWVuc2hvdA==");
@@ -242,7 +370,7 @@ describe("ScrapeService", () => {
     });
 
     it("should skip the chromedriver log when the file is absent", async () => {
-      (fs.existsSync as jest.Mock).mockReturnValue(false);
+      presentFiles.delete(CHROMEDRIVER_LOG);
       mockGetCurrentUrl.mockResolvedValue("https://example.com");
       mockTakeScreenshot.mockResolvedValue("shot");
       mockGetPageSource.mockResolvedValue("<html></html>");

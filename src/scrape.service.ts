@@ -1,13 +1,12 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import webdriver, { By, until } from "selenium-webdriver";
+import webdriver, { until } from "selenium-webdriver";
 import chrome from "selenium-webdriver/chrome";
 import { sleep } from "../utils/sleep";
 
 const REPORT_BODY_ID = "rvMainReportView_ctl13";
-const EXPORT_BUTTON_ID = "rvMainReportView_ctl09_ctl04_ctl00";
-const EXPORT_MENU_ID = "rvMainReportView_ctl09_ctl04_ctl00_Menu";
+const VIEWER_ID = "rvMainReportView";
 const CHROMEDRIVER_LOG_PATH = "/tmp/chromedriver.log";
 
 /** Page state captured when a scrape fails, so the failure email can explain what the browser saw */
@@ -25,9 +24,10 @@ export class ScrapeService {
   private readonly loginUrl: string;
   private readonly reportFilename: string;
   private readonly EL_VISIBLE_TIMEOUT = 120_000;
-  /** The export menu opens in well under a second when the click lands, so a long wait only burns Lambda budget */
-  private readonly MENU_OPEN_TIMEOUT = 10_000;
-  private readonly MENU_CLICK_ATTEMPTS = 3;
+  private readonly DOWNLOAD_TIMEOUT = 60_000;
+  private readonly DOWNLOAD_POLL_INTERVAL = 500;
+  /** Anything this small is an error page or a truncated transfer, not the report */
+  private readonly MIN_REPORT_BYTES = 1024;
   private readonly PAGE_SOURCE_MAX_CHARS = 512_000;
   private readonly LOG_TAIL_MAX_CHARS = 256_000;
   private readonly DEBUG: boolean;
@@ -54,23 +54,6 @@ export class ScrapeService {
       downloadPath: downloadDir,
       eventsEnabled: true,
     });
-  }
-
-  /**
-   * Find the PDF export button within the reports menu
-   * @param reportsMenu Webdriver element representing Corebridge reports menu
-   * @returns PDF report export button
-   */
-  private static async pdfLink(reportsMenu: webdriver.WebElement) {
-    const links = await reportsMenu.findElements(By.css("a"));
-    let pdfLinkEl: webdriver.WebElement | null = null;
-    for (const link of links) {
-      const title = await link.getAttribute("title");
-      if (title.toLowerCase() === "pdf") {
-        pdfLinkEl = link;
-      }
-    }
-    return pdfLinkEl;
   }
 
   /**
@@ -161,23 +144,19 @@ export class ScrapeService {
 
   /**
    * Get today's report
-   * @returns Buffer of the report file
+   * @returns Read stream of the downloaded report file
    */
   public async scrapeReport() {
     await this.step("login", () => this.login());
-    const reportsMenu = await this.step("open reports menu", () =>
-      this.openReportsMenu()
+    await this.step("wait for report to render", () =>
+      this.waitForReportToBeVisible()
     );
     await this.step("enable downloads", () => this.enableDownloads());
-    await this.step("export pdf report", () => this.exportPdfReport(reportsMenu));
+    const reportPath = await this.step("export pdf report", () =>
+      this.exportPdfReport()
+    );
 
-    return this.step("read downloaded report", async () => {
-      const downloadDir = ScrapeService.getDownloadDir();
-      const files = fs.readdirSync(downloadDir);
-      this.debugLog("files in download dir:", downloadDir, files);
-
-      return fs.createReadStream(`${downloadDir}/${this.reportFilename}`);
-    });
+    return fs.createReadStream(reportPath);
   }
 
   /**
@@ -315,60 +294,79 @@ export class ScrapeService {
   }
 
   /**
-   * Open the reports menu
-   * @description The menu is a JS dropdown that lives in the DOM hidden, so a click that doesn't
-   * register looks identical to a click that did until the menu fails to appear. Verify it opened
-   * and click again if it didn't.
-   * @returns The opened reports menu
+   * Download the PDF report file
+   * @description Calls the report viewer's own export method rather than driving the export
+   * dropdown. The dropdown widget is created with `Enabled: false` and is not always re-enabled
+   * once the report finishes loading, and a disabled dropdown swallows clicks, so the menu never
+   * opens. `exportReport` is the same call the menu's PDF item makes and does not depend on the
+   * widget's state.
+   * @returns Path to the downloaded report
    */
-  private async openReportsMenu() {
-    await this.waitForReportToBeVisible();
-    const reportsButton = await this.driver.findElement({
-      id: EXPORT_BUTTON_ID,
-    });
-    await this.driver.wait(
-      until.elementIsVisible(reportsButton),
-      this.EL_VISIBLE_TIMEOUT,
+  private async exportPdfReport() {
+    const reportPath = path.join(
+      ScrapeService.getDownloadDir(),
+      this.reportFilename
     );
-    await sleep(2000);
+    this.removeStaleReport(reportPath);
 
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= this.MENU_CLICK_ATTEMPTS; attempt++) {
-      await reportsButton.click();
-      try {
-        const reportsMenu = await this.driver.findElement({
-          id: EXPORT_MENU_ID,
-        });
-        await this.driver.wait(
-          until.elementIsVisible(reportsMenu),
-          this.MENU_OPEN_TIMEOUT,
-        );
-        this.debugLog(`export menu opened on attempt ${attempt}`);
-        return reportsMenu;
-      } catch (e) {
-        lastError = e;
-        this.debugLog(
-          `export menu did not open on attempt ${attempt}`,
-          e instanceof Error ? e.message : e
-        );
-        await sleep(2000);
-      }
+    const result = await this.driver.executeScript<string>(
+      `var viewer = typeof $find === "function" && $find(arguments[0]);
+       if (!viewer) return "report viewer component " + arguments[0] + " not found";
+       if (typeof viewer.exportReport !== "function") return "viewer has no exportReport method";
+       viewer.exportReport("PDF");
+       return "ok";`,
+      VIEWER_ID
+    );
+
+    if (result !== "ok") {
+      throw new Error(`could not trigger the PDF export: ${result}`);
     }
 
-    const reason = lastError instanceof Error ? lastError.message : String(lastError);
-    throw new Error(
-      `export menu never became visible after ${this.MENU_CLICK_ATTEMPTS} clicks on #${EXPORT_BUTTON_ID}: ${reason}`
-    );
+    await this.waitForDownload(reportPath);
+    return reportPath;
   }
 
   /**
-   * Download the PDF report file
-   * @param reportsMenu The already-open reports menu
+   * Delete a report left behind by an earlier run
+   * @description Lambda keeps /tmp across warm invocations, so yesterday's file would otherwise
+   * look like a fresh download and we would report stale numbers as success
    */
-  private async exportPdfReport(reportsMenu: webdriver.WebElement) {
-    const pdfLinkEl = await reportsMenu.findElement(ScrapeService.pdfLink);
-    await pdfLinkEl.click();
-    await sleep(10000);
+  private removeStaleReport(reportPath: string) {
+    if (!fs.existsSync(reportPath)) {
+      return;
+    }
+    this.debugLog("removing report left over from an earlier run", reportPath);
+    fs.unlinkSync(reportPath);
+  }
+
+  /**
+   * Wait for the exported report to finish downloading
+   * @param reportPath Path the download is expected to land on
+   */
+  private async waitForDownload(reportPath: string) {
+    const deadline = Date.now() + this.DOWNLOAD_TIMEOUT;
+    const partialPath = `${reportPath}.crdownload`;
+
+    while (Date.now() < deadline) {
+      // Chrome writes to .crdownload first, then renames, so the rename is the completion signal
+      if (fs.existsSync(reportPath) && !fs.existsSync(partialPath)) {
+        const { size } = fs.statSync(reportPath);
+        if (size < this.MIN_REPORT_BYTES) {
+          throw new Error(
+            `downloaded report at ${reportPath} is only ${size} bytes, expected at least ${this.MIN_REPORT_BYTES}`
+          );
+        }
+        this.debugLog("report downloaded", reportPath, `${size} bytes`);
+        return;
+      }
+      await sleep(this.DOWNLOAD_POLL_INTERVAL);
+    }
+
+    const downloadDir = path.dirname(reportPath);
+    const files = fs.readdirSync(downloadDir);
+    throw new Error(
+      `report did not download to ${reportPath} within ${this.DOWNLOAD_TIMEOUT}ms. Files in ${downloadDir}: ${files.join(", ")}`
+    );
   }
 
   /**
