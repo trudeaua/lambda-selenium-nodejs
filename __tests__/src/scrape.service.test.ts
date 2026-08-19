@@ -70,8 +70,32 @@ describe("ScrapeService", () => {
 
   /** Files the mocked fs reports as existing */
   let presentFiles: Set<string>;
-  /** Virtual clock so download polling doesn't wait in real time */
+  /** Virtual clock so polling doesn't wait in real time */
   let now: number;
+  /** Readiness values returned in order, then "ready" forever */
+  let readinessStates: string[];
+
+  const exportCalls = () =>
+    mockExecuteScript.mock.calls.filter(([script]) =>
+      String(script).includes("exportReport")
+    );
+
+  const readinessCalls = () =>
+    mockExecuteScript.mock.calls.filter(
+      ([script]) => !String(script).includes("exportReport")
+    );
+
+  /** Report becomes ready only after the queued states are exhausted */
+  const queueReadiness = (states: string[]) => {
+    readinessStates = [...states];
+    mockExecuteScript.mockImplementation(async (script: string) => {
+      if (script.includes("exportReport")) {
+        presentFiles.add(reportPath);
+        return "ok";
+      }
+      return readinessStates.shift() ?? "ready";
+    });
+  };
 
   const mockElement = {
     sendKeys: jest.fn(),
@@ -111,11 +135,17 @@ describe("ScrapeService", () => {
     mockWait.mockResolvedValue(undefined);
     mockFindElement.mockResolvedValue(mockElement);
 
-    // The export triggers a download that lands immediately unless a test says otherwise
-    mockExecuteScript.mockImplementation(async () => {
-      presentFiles.add(reportPath);
-      return "ok";
+    // executeScript serves two scripts: the readiness poll and the export trigger.
+    // By default the report is ready and the download lands immediately.
+    mockExecuteScript.mockImplementation(async (script: string) => {
+      if (script.includes("exportReport")) {
+        presentFiles.add(reportPath);
+        return "ok";
+      }
+      return "ready";
     });
+
+    readinessStates = [];
 
     (sleep as jest.Mock).mockImplementation(async (ms: number) => {
       now += ms;
@@ -163,8 +193,8 @@ describe("ScrapeService", () => {
       const service = new ScrapeService();
       await service.scrapeReport();
 
-      expect(mockExecuteScript).toHaveBeenCalledTimes(1);
-      const [script, viewerId] = mockExecuteScript.mock.calls[0];
+      expect(exportCalls()).toHaveLength(1);
+      const [script, viewerId] = exportCalls()[0];
       expect(script).toContain("exportReport");
       expect(script).toContain('viewer.exportReport("PDF")');
       expect(viewerId).toBe("rvMainReportView");
@@ -181,21 +211,31 @@ describe("ScrapeService", () => {
       );
     });
 
-    it("should wait for the report body to be visible before exporting", async () => {
+    it("should check readiness before exporting", async () => {
       const service = new ScrapeService();
       await service.scrapeReport();
 
-      expect(mockFindElement).toHaveBeenCalledWith({
-        id: "rvMainReportView_ctl13",
-      });
-      expect(mockWait.mock.invocationCallOrder[0]).toBeLessThan(
-        mockExecuteScript.mock.invocationCallOrder[0]
-      );
+      const [script, contentId, overlayId] = readinessCalls()[0];
+      expect(script).toContain("isInAsyncPostBack");
+      expect(script).toContain("getComputedStyle");
+      expect(contentId).toBe("VisibleReportContentrvMainReportView_ctl13");
+      expect(overlayId).toBe("rvMainReportView_AsyncWait");
+      expect(exportCalls()).toHaveLength(1);
+    });
+
+    it("should not wait on the ctl13 scroll container", async () => {
+      const service = new ScrapeService();
+      await service.scrapeReport();
+
+      const lookedUpIds = mockFindElement.mock.calls.map((call) => call[0]?.id);
+      expect(lookedUpIds).not.toContain("rvMainReportView_ctl13");
     });
 
     it("should throw when the viewer component is missing", async () => {
-      mockExecuteScript.mockResolvedValue(
-        "report viewer component rvMainReportView not found"
+      mockExecuteScript.mockImplementation(async (script: string) =>
+        script.includes("exportReport")
+          ? "report viewer component rvMainReportView not found"
+          : "ready"
       );
 
       const service = new ScrapeService();
@@ -206,7 +246,9 @@ describe("ScrapeService", () => {
     });
 
     it("should throw when the viewer has no exportReport method", async () => {
-      mockExecuteScript.mockResolvedValue("viewer has no exportReport method");
+      mockExecuteScript.mockImplementation(async (script: string) =>
+        script.includes("exportReport") ? "viewer has no exportReport method" : "ready"
+      );
 
       const service = new ScrapeService();
 
@@ -223,6 +265,112 @@ describe("ScrapeService", () => {
       await expect(service.scrapeReport()).rejects.toThrow(
         "[login] connection refused"
       );
+    });
+  });
+
+  describe("waiting for the report to render", () => {
+    it("should poll until the viewer reports ready", async () => {
+      queueReadiness([
+        "loading overlay still showing",
+        "async postback in progress",
+        "report content empty",
+      ]);
+
+      const service = new ScrapeService();
+      await service.scrapeReport();
+
+      expect(readinessCalls()).toHaveLength(4);
+      expect(
+        readinessCalls().length && exportCalls()[0]
+      ).toBeDefined();
+    });
+
+    it("should not export until the report is ready", async () => {
+      queueReadiness(["loading overlay still showing"]);
+
+      const service = new ScrapeService();
+      await service.scrapeReport();
+
+      const lastReadiness = mockExecuteScript.mock.calls
+        .map(([script]) => String(script))
+        .lastIndexOf(readinessCalls()[0][0] as string);
+      const exportIndex = mockExecuteScript.mock.calls.findIndex(([script]) =>
+        String(script).includes("exportReport")
+      );
+      expect(lastReadiness).toBeLessThan(exportIndex);
+    });
+
+    it("should report the last state when the report never renders", async () => {
+      mockExecuteScript.mockImplementation(async (script: string) =>
+        script.includes("exportReport") ? "ok" : "loading overlay still showing"
+      );
+
+      const service = new ScrapeService();
+
+      await expect(service.scrapeReport()).rejects.toThrow(
+        "[export pdf report] report did not finish rendering within 120000ms (last state: loading overlay still showing)"
+      );
+      expect(exportCalls()).toHaveLength(0);
+    });
+  });
+
+  describe("busy viewer", () => {
+    const busyError = () =>
+      new Error(
+        "javascript error: Sys.InvalidOperationException: The report or page is being updated. Please wait for the current action to complete."
+      );
+
+    it("should retry the export when the viewer is mid-postback", async () => {
+      let exportAttempts = 0;
+      mockExecuteScript.mockImplementation(async (script: string) => {
+        if (!script.includes("exportReport")) {
+          return "ready";
+        }
+        exportAttempts += 1;
+        if (exportAttempts < 3) {
+          throw busyError();
+        }
+        presentFiles.add(reportPath);
+        return "ok";
+      });
+
+      const service = new ScrapeService();
+      const result = await service.scrapeReport();
+
+      expect(exportAttempts).toBe(3);
+      expect(result).toBe("mock-stream");
+    });
+
+    it("should give up after the export attempt limit", async () => {
+      mockExecuteScript.mockImplementation(async (script: string) => {
+        if (!script.includes("exportReport")) {
+          return "ready";
+        }
+        throw busyError();
+      });
+
+      const service = new ScrapeService();
+
+      await expect(service.scrapeReport()).rejects.toThrow(
+        /being updated/
+      );
+      expect(exportCalls()).toHaveLength(3);
+    });
+
+    it("should not retry errors unrelated to the viewer being busy", async () => {
+      mockExecuteScript.mockImplementation(async (script: string) => {
+        if (!script.includes("exportReport")) {
+          return "ready";
+        }
+        throw new Error("javascript error: $find is not defined");
+      });
+
+      const service = new ScrapeService();
+
+      await expect(service.scrapeReport()).rejects.toThrow(
+        "$find is not defined"
+      );
+      expect(exportCalls()).toHaveLength(1);
     });
   });
 
@@ -248,7 +396,9 @@ describe("ScrapeService", () => {
 
     it("should fail rather than reuse a stale report when the export downloads nothing", async () => {
       presentFiles.add(reportPath);
-      mockExecuteScript.mockResolvedValue("ok");
+      mockExecuteScript.mockImplementation(async (script: string) =>
+        script.includes("exportReport") ? "ok" : "ready"
+      );
 
       const service = new ScrapeService();
 
@@ -261,7 +411,9 @@ describe("ScrapeService", () => {
   describe("waiting for the download", () => {
     it("should poll until the file appears", async () => {
       let polls = 0;
-      mockExecuteScript.mockResolvedValue("ok");
+      mockExecuteScript.mockImplementation(async (script: string) =>
+        script.includes("exportReport") ? "ok" : "ready"
+      );
       (sleep as jest.Mock).mockImplementation(async (ms: number) => {
         now += ms;
         if (ms === POLL_INTERVAL) {
@@ -281,7 +433,10 @@ describe("ScrapeService", () => {
 
     it("should keep waiting while a .crdownload partial is present", async () => {
       let polls = 0;
-      mockExecuteScript.mockImplementation(async () => {
+      mockExecuteScript.mockImplementation(async (script: string) => {
+        if (!script.includes("exportReport")) {
+          return "ready";
+        }
         presentFiles.add(reportPath);
         presentFiles.add(partialPath);
         return "ok";
@@ -303,7 +458,9 @@ describe("ScrapeService", () => {
     });
 
     it("should throw when the download never arrives", async () => {
-      mockExecuteScript.mockResolvedValue("ok");
+      mockExecuteScript.mockImplementation(async (script: string) =>
+        script.includes("exportReport") ? "ok" : "ready"
+      );
 
       const service = new ScrapeService();
 

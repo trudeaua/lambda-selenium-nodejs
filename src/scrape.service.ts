@@ -5,8 +5,9 @@ import webdriver, { until } from "selenium-webdriver";
 import chrome from "selenium-webdriver/chrome";
 import { sleep } from "../utils/sleep";
 
-const REPORT_BODY_ID = "rvMainReportView_ctl13";
 const VIEWER_ID = "rvMainReportView";
+const REPORT_CONTENT_ID = "VisibleReportContentrvMainReportView_ctl13";
+const ASYNC_WAIT_ID = "rvMainReportView_AsyncWait";
 const CHROMEDRIVER_LOG_PATH = "/tmp/chromedriver.log";
 
 /** Page state captured when a scrape fails, so the failure email can explain what the browser saw */
@@ -24,6 +25,12 @@ export class ScrapeService {
   private readonly loginUrl: string;
   private readonly reportFilename: string;
   private readonly EL_VISIBLE_TIMEOUT = 120_000;
+  private readonly REPORT_READY_TIMEOUT = 120_000;
+  private readonly REPORT_READY_POLL_INTERVAL = 1_000;
+  /** Let the viewer re-enable its toolbar once rendering finishes */
+  private readonly REPORT_SETTLE = 2_000;
+  private readonly EXPORT_ATTEMPTS = 3;
+  private readonly EXPORT_RETRY_DELAY = 5_000;
   private readonly DOWNLOAD_TIMEOUT = 60_000;
   private readonly DOWNLOAD_POLL_INTERVAL = 500;
   /** Anything this small is an error page or a truncated transfer, not the report */
@@ -148,9 +155,6 @@ export class ScrapeService {
    */
   public async scrapeReport() {
     await this.step("login", () => this.login());
-    await this.step("wait for report to render", () =>
-      this.waitForReportToBeVisible()
-    );
     await this.step("enable downloads", () => this.enableDownloads());
     const reportPath = await this.step("export pdf report", () =>
       this.exportPdfReport()
@@ -296,10 +300,9 @@ export class ScrapeService {
   /**
    * Download the PDF report file
    * @description Calls the report viewer's own export method rather than driving the export
-   * dropdown. The dropdown widget is created with `Enabled: false` and is not always re-enabled
-   * once the report finishes loading, and a disabled dropdown swallows clicks, so the menu never
-   * opens. `exportReport` is the same call the menu's PDF item makes and does not depend on the
-   * widget's state.
+   * dropdown. The dropdown widget is created disabled and is not reliably re-enabled, and a
+   * disabled dropdown swallows clicks, so the menu never opens. `exportReport` is the same call
+   * the menu's PDF item makes and does not depend on the widget's state.
    * @returns Path to the downloaded report
    */
   private async exportPdfReport() {
@@ -309,6 +312,31 @@ export class ScrapeService {
     );
     this.removeStaleReport(reportPath);
 
+    for (let attempt = 1; attempt <= this.EXPORT_ATTEMPTS; attempt++) {
+      await this.waitForReportToRender();
+      try {
+        await this.triggerExport();
+        break;
+      } catch (e) {
+        if (attempt === this.EXPORT_ATTEMPTS || !ScrapeService.isViewerBusy(e)) {
+          throw e;
+        }
+        this.debugLog(
+          `viewer was still busy on export attempt ${attempt}, retrying`,
+          e instanceof Error ? e.message : e
+        );
+        await sleep(this.EXPORT_RETRY_DELAY);
+      }
+    }
+
+    await this.waitForDownload(reportPath);
+    return reportPath;
+  }
+
+  /**
+   * Ask the viewer to export the report as a PDF
+   */
+  private async triggerExport() {
     const result = await this.driver.executeScript<string>(
       `var viewer = typeof $find === "function" && $find(arguments[0]);
        if (!viewer) return "report viewer component " + arguments[0] + " not found";
@@ -321,9 +349,71 @@ export class ScrapeService {
     if (result !== "ok") {
       throw new Error(`could not trigger the PDF export: ${result}`);
     }
+  }
 
-    await this.waitForDownload(reportPath);
-    return reportPath;
+  /**
+   * Does this error mean the viewer was mid-postback?
+   * @description ASP.NET AJAX throws Sys.InvalidOperationException when a new action starts while
+   * one is already running
+   */
+  private static isViewerBusy(e: unknown) {
+    return (
+      e instanceof Error &&
+      /being updated|InvalidOperationException/i.test(e.message)
+    );
+  }
+
+  /**
+   * Wait until the report has actually finished loading
+   * @description The `rvMainReportView_ctl13` scroll container is visible from the moment the page
+   * loads, so its visibility says nothing about the report. The real signals are the async-wait
+   * overlay being gone, no postback in flight, and the content div being populated. Exporting
+   * before all three hold fails with "The report or page is being updated".
+   */
+  private async waitForReportToRender() {
+    const deadline = Date.now() + this.REPORT_READY_TIMEOUT;
+    let state = "not checked yet";
+
+    while (Date.now() < deadline) {
+      state = await this.driver.executeScript<string>(
+        `var content = document.getElementById(arguments[0]);
+         var overlay = document.getElementById(arguments[1]);
+
+         function visible(el) {
+           if (!el) return false;
+           var s = window.getComputedStyle(el);
+           return s.display !== "none" && s.visibility !== "hidden";
+         }
+
+         if (typeof Sys === "undefined" || !Sys.WebForms) return "viewer scripts not loaded";
+         try {
+           var prm = Sys.WebForms.PageRequestManager.getInstance();
+           if (prm && prm.get_isInAsyncPostBack()) return "async postback in progress";
+         } catch (err) {
+           return "page request manager unavailable: " + err;
+         }
+         if (visible(overlay)) return "loading overlay still showing";
+         if (!content) return "report content container not found";
+         if (!visible(content)) return "report content still hidden";
+         if (content.children.length === 0) return "report content empty";
+         return "ready";`,
+        REPORT_CONTENT_ID,
+        ASYNC_WAIT_ID
+      );
+
+      if (state === "ready") {
+        this.debugLog("report finished rendering");
+        await sleep(this.REPORT_SETTLE);
+        return;
+      }
+
+      this.debugLog("report not ready yet", state);
+      await sleep(this.REPORT_READY_POLL_INTERVAL);
+    }
+
+    throw new Error(
+      `report did not finish rendering within ${this.REPORT_READY_TIMEOUT}ms (last state: ${state})`
+    );
   }
 
   /**
@@ -367,21 +457,6 @@ export class ScrapeService {
     throw new Error(
       `report did not download to ${reportPath} within ${this.DOWNLOAD_TIMEOUT}ms. Files in ${downloadDir}: ${files.join(", ")}`
     );
-  }
-
-  /**
-   * Wait for the report to be visible on screen
-   * @description Report needs to load and loading dialog shown first, need to wait for report to be visible in order to export
-   */
-  private async waitForReportToBeVisible() {
-    const report = await this.driver.findElement({
-      id: REPORT_BODY_ID,
-    });
-    await this.driver.wait(
-      until.elementIsVisible(report),
-      this.EL_VISIBLE_TIMEOUT,
-    );
-    await sleep(2000);
   }
 
   private debugLog(...obj: any[]) {
