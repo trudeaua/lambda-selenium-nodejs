@@ -14,7 +14,7 @@
     "@aws-sdk/client-secrets-manager": "^3.1025.0",
     "aws-lambda": "^1.0.7",
     "dayjs": "^1.11.13",
-    "dotenv": "^16.4.7",
+    "dotenv": "^17.4.2",
     "googleapis": "^148.0.0",
     "selenium-webdriver": "^4.27.0"
   },
