@@ -24,7 +24,7 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^22.15.3",
     "@types/selenium-webdriver": "^4.1.28",
-    "esbuild": "^0.24.2",
+    "esbuild": "^0.28.1",
     "esbuild-node-tsc": "^2.0.5",
     "jest": "^30.3.0",
     "serverless": "^3.40.0",
